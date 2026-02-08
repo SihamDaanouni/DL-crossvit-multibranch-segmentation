@@ -1,0 +1,29 @@
+# data (NEVER COMMIT)
+data/
+datasets/
+*.zip
+*.tar
+*.tar.gz
+*.7z
+*.parquet
+*.jpg
+*.jpeg
+*.png
+*.tif
+*.tiff
+
+# checkpoints / logs
+outputs/
+runs/
+checkpoints/
+*.pth
+*.pt
+*.ckpt
+
+# python
+.venv/
+__pycache__/
+*.pyc
+
+# system
+.DS_Store
