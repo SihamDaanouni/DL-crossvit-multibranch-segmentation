@@ -143,8 +143,7 @@ class MultiScaleBlock(nn.Module):
             tmp = []
             for i in range(depth[d]):
                 tmp.append(
-                    Block(dim=dim[d], num_heads=num_heads[d], mlp_ratio=mlp_ratio[d], qkv_bias=qkv_bias, 
-                          drop=drop, attn_drop=attn_drop, drop_path=drop_path[i], norm_layer=norm_layer))
+                    Block(dim=dim[d], num_heads=num_heads[d], mlp_ratio=mlp_ratio[d], qkv_bias=qkv_bias, attn_drop=attn_drop, drop_path=drop_path[i], norm_layer=norm_layer))
             if len(tmp) != 0:
                 self.blocks.append(nn.Sequential(*tmp))
 
@@ -310,6 +309,43 @@ class VisionTransformer(nn.Module):
         ce_logits = torch.mean(torch.stack(ce_logits, dim=0), dim=0)
         return ce_logits
 
+    def forward_dual(self, x_small, x_large):
+        """
+        x_small  : image pour la branche Small
+        x_large  : image pour la branche Large
+        """
+        B = x_small.shape[0]
+        xs = []
+
+        # ===== Branche 0 (Small) =====
+        x0 = self.patch_embed[0](x_small)
+        cls0 = self.cls_token[0].expand(B, -1, -1)
+        x0 = torch.cat((cls0, x0), dim=1)
+        x0 = x0 + self.pos_embed[0]
+        x0 = self.pos_drop(x0)
+        xs.append(x0)
+
+        # ===== Branche 1 (Large) =====
+        x1 = self.patch_embed[1](x_large)
+        cls1 = self.cls_token[1].expand(B, -1, -1)
+        x1 = torch.cat((cls1, x1), dim=1)
+        x1 = x1 + self.pos_embed[1]
+        x1 = self.pos_drop(x1)
+        xs.append(x1)
+
+        # ===== CrossViT blocks =====
+        for blk in self.blocks:
+            xs = blk(xs)
+
+        xs = [self.norm[i](x) for i, x in enumerate(xs)]
+        cls_tokens = [x[:, 0] for x in xs]
+
+        # ===== Classification =====
+        logits = [self.head[i](cls) for i, cls in enumerate(cls_tokens)]
+        logits = torch.mean(torch.stack(logits, dim=0), dim=0)
+
+        return logits
+
 
 
 
@@ -334,8 +370,16 @@ def crossvit_small_224(pretrained=False, **kwargs):
                               norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     model.default_cfg = _cfg()
     if pretrained:
-        state_dict = torch.hub.load_state_dict_from_url(_model_urls['crossvit_small_224'], map_location='cpu')
-        model.load_state_dict(state_dict)
+        state_dict = torch.hub.load_state_dict_from_url(_model_urls['crossvit_small_224'], map_location="cpu")
+
+        # 🔥 Supprimer les poids de la tête ImageNet
+        state_dict = {
+            k: v for k, v in state_dict.items()
+            if not k.startswith("head")
+        }
+
+        model.load_state_dict(state_dict, strict=False)
+
     return model
 
 
