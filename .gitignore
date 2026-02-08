@@ -1,5 +1,4 @@
 # data (NEVER COMMIT)
-data/
 datasets/
 *.zip
 *.tar
@@ -27,3 +26,17 @@ __pycache__/
 
 # system
 .DS_Store
+
+# Python-generated files - UV
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.venv/
+main.py
+uv.lock
+
+# Project'specific
+*.pdf
