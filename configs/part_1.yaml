@@ -1,16 +1,16 @@
 seed: 42
 
 data:
-  labels_csv: "data/labels.csv"
-  images_dir: "data/raw/mission_herbonaute_2000"
-  image_exts: [".jpeg"]
-  train_csv: "splits/o1a_train.csv"
-  val_csv: "splits/o1a_val.csv"
+  path_to_csv: "datasets/Data_v2.csv"
+  base_image_dir: "datasets/mission_herbonaute_2000"
+  segmented_image_dir: "datasets/mission_herbonaute_2000_seg_black"
+  image_ext: ".jpg"
 
 split:
-  val_ratio: 0.20
+  train_test: 0.80
+  train_val: 0.80
 
-train:
+model:
   epochs: 10
   batch_size: 8
   lr: 0.0001
@@ -20,5 +20,5 @@ train:
   amp: true
 
 output:
-  dir: "outputs/o1a"
+  dir: "outputs/part_1"
   save_best_on: "f1"

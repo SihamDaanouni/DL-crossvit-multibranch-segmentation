@@ -11,55 +11,85 @@ from tqdm import tqdm
 
 from src.utils.seed import seed_everything
 from src.utils.metrics import compute_classif_metrics
-from src.utils.plotting import save_curve
+from src.utils.plotting import save_curve, plot_loss, plot_metric
 from src.dataset import BaseSegmentedDataset
-from src.models.crossvit_o1a import CrossViTO1A
 
+def train_and_val(model, optimizer, criterion, train_loader, val_loader, device, save_path:Path, model_type:str, num_epochs:int=10):
+    all_train_loss = []
+    all_val_loss = []
 
-def train_one_epoch(model, loader, optimizer, criterion, device, amp: bool):
-    model.train()
-    losses = []
-    scaler = torch.cuda.amp.GradScaler(enabled=amp)
+    val_accuracy = []
+    val_f1_score = []
 
-    for x, y in tqdm(loader, desc="train", leave=False):
-        x = x.to(device)
-        y = y.to(device)
+    # Training and validation
+    for epoch in tqdm(range(num_epochs), desc="Epochs", unit="epoch"):
+        # Training phase
+        model.train()
+        running_loss = 0.0
 
-        optimizer.zero_grad(set_to_none=True)
-        with torch.cuda.amp.autocast(enabled=amp):
-            logits = model(x)
-            loss = criterion(logits, y)
+        for input, label in tqdm(train_loader, desc=f"Époque {epoch+1} - Entraînement", leave=False):
+            input, label = input.to(device), label.to(device)
 
-        scaler.scale(loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
-        losses.append(float(loss.item()))
+            optimizer.zero_grad()
+            prediction = model(input)
+            loss = criterion(prediction, label)
 
-    return sum(losses) / max(len(losses), 1)
+            loss.backward()
+            optimizer.step()
 
+            running_loss += loss.item()
 
-@torch.no_grad()
-def eval_one_epoch(model, loader, criterion, device, amp: bool):
+        train_loss = running_loss / len(train_loader)
+        all_train_loss.append(train_loss)
+        print(f"Époque {epoch+1}/{num_epochs}, Perte entraînement: {train_loss:.4f}")
+
+        # Validation phase
+        model.eval()
+        val_loss = 0.0
+        y_true = []
+        y_pred = []
+
+        with torch.no_grad():
+            for input, label in tqdm(val_loader, desc=f"Époque {epoch+1} - Validation", leave=False):
+                input, label = input.to(device), label.to(device)
+                prediction = model(input)
+                loss = criterion(prediction, label)
+                val_loss += loss.item()
+
+                y_true.extend(label.cpu().numpy())
+                y_pred.extend(prediction.cpu().numpy())
+
+        # Calcul de la perte et des métriques
+        val_loss = val_loss / len(val_loader)
+        all_val_loss.append(val_loss)
+        metrics = compute_classif_metrics(y_true,y_pred)
+        val_accuracy.append(metrics.get("accuracy", default=0))
+        val_f1_score.append(metrics.get("f1", default=0))
+        print(f"Époque {epoch+1}/{num_epochs}, Perte validation: {val_loss:.4f},\n Accuracy: {metrics.get("accuracy", default=0)}%,\n F1-Score: {metrics.get("f1", default=0)},\n Confusion Matrix: {metrics.get("confusion_matrix", default="Null")}")
+    
+    # Saving/Plotting results
+    plot_loss(all_train_loss, all_val_loss, num_epochs, save_path=save_path / (model_type + "_loss_curve"))
+    plot_metric(val_accuracy, num_epochs, "Accuracy", model_type + "'s Accuracy", save_path=save_path / (model_type + "_accuracy"))
+    plot_metric(val_f1_score, num_epochs, "F1-Score", model_type + "'s F1-Score", save_path=save_path / (model_type + "_f1_score"))
+
+def test(model, criterion, test_loader, device):
     model.eval()
-    losses = []
-    y_true, y_pred = [], []
+    val_loss = 0.0
+    y_true = []
+    y_pred = []
 
-    for x, y in tqdm(loader, desc="val", leave=False):
-        x = x.to(device)
-        y = y.to(device)
+    with torch.no_grad():
+        for input, label in tqdm(test_loader, desc="Model Test", leave=False):
+            input, label = input.to(device), label.to(device)
+            prediction = model(input)
+            loss = criterion(prediction, label)
+            val_loss += loss.item()
 
-        with torch.cuda.amp.autocast(enabled=amp):
-            logits = model(x)
-            loss = criterion(logits, y)
-
-        preds = torch.argmax(logits, dim=1)
-        losses.append(float(loss.item()))
-        y_true.extend(y.cpu().tolist())
-        y_pred.extend(preds.cpu().tolist())
-
-    metrics = compute_classif_metrics(y_true, y_pred)
-    return (sum(losses) / max(len(losses), 1)), metrics
-
+            y_true.extend(label.cpu().numpy())
+            y_pred.extend(prediction.cpu().numpy())
+    
+    metrics = compute_classif_metrics(y_true,y_pred)
+    return metrics
 
 def main(config_path: str):
     cfg = yaml.safe_load(Path(config_path).read_text(encoding="utf-8"))
