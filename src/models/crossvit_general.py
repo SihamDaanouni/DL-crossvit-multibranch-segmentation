@@ -103,7 +103,7 @@ def build_backbone(*, same_resolution: bool, img_size: int = 224) -> CrossViTBac
         depth = ([1, 4, 0], [1, 4, 0], [1, 4, 0])
         mlp_ratio = (4.0, 4.0, 1.0)
 
-    return CrossViTBackbone(
+    backbone = CrossViTBackbone(
         img_size=img_size_list,
         patch_size=patch_size,
         in_chans=3,
@@ -119,6 +119,10 @@ def build_backbone(*, same_resolution: bool, img_size: int = 224) -> CrossViTBac
         multi_conv=False,
     )
 
+    backbone.embed_dim = embed_dim
+    return backbone
+
+
 
 class CrossViTClassifier(nn.Module):
     """
@@ -132,8 +136,11 @@ class CrossViTClassifier(nn.Module):
         route: Sequence[int],          # ex: [0, 0] pour A, [0, 1] pour C1
         num_classes: int = 2,
         img_size: int = 224,
+        patch_weighting: bool = False, # Optionnel pour O3
     ):
+        
         super().__init__()
+        self.patch_weighting = patch_weighting
         # Vérifications de sécurité
         if len(route) != 2:
             raise ValueError("route must have length 2 (for 2 branches)")

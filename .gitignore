@@ -23,7 +23,7 @@ checkpoints/
 .venv/
 __pycache__/
 *.pyc
-
+.vscode/
 # system
 .DS_Store
 

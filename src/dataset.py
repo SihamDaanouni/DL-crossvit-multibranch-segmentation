@@ -6,18 +6,31 @@ import yaml
 
 import matplotlib.pyplot as plt
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFile
 
 from torch.utils.data import Dataset
 from torchvision import transforms
 import pandas as pd
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 class SplitDataset(Dataset):
-    def __init__(self, path_to_base:str, path_to_segmented:str, path_to_csv:str|None = None, extension:str=".jpg", transform=transforms.ToTensor(), files:list[str]|None = None, labels:list[str]|None = None, is_test:bool = False):
+    def __init__(
+        self,
+        path_to_base: str,
+        path_to_segmented: str,
+        path_to_csv: str | None = None,
+        extension: str = ".jpg",
+        img_transform=None,
+        mask_transform=None,
+        files: list[str] | None = None,
+        labels: list[str] | None = None,
+        is_test: bool = False
+    ):
         super().__init__()
         self.base_path = path_to_base
         self.segmented_path = path_to_segmented
-        self.transform = transform
+        self.img_transform = img_transform
+        self.mask_transform = mask_transform
 
         # For testing purposes
         self.is_test = is_test
@@ -80,10 +93,19 @@ class SplitDataset(Dataset):
 
             plt.show()
         
-        base_tensor = self.transform(base_image)
-        segmented_tensor = self.transform(segmented_image)
+        if self.img_transform:
+            base_tensor = self.img_transform(base_image)
+        else:
+            base_tensor = transforms.ToTensor()(base_image)
 
-        return base_tensor, segmented_tensor, self.labels[index]
+        if self.mask_transform:
+            segmented_tensor = self.mask_transform(segmented_image)
+        else:
+            segmented_tensor = transforms.ToTensor()(segmented_image)
+
+
+
+        return base_tensor, segmented_tensor, int(self.labels[index])
     
     # Generates all the filenames and associated labels for __getitem__ usage
     def generate_files_labels(self, csv_path:str, sepv:str=','):
@@ -118,10 +140,29 @@ class SplitDataset(Dataset):
 
         return fst_files, snd_files, fst_labels, snd_labels
     
-    def split(self, split_percentage:float=0.8, fst_tf=transforms.ToTensor(), snd_tf=transforms.ToTensor()):
+    def split(self, split_percentage: float = 0.8):
         fst_files, snd_files, fst_labels, snd_labels = self.get_split_data(split_percentage)
-        fst_dataset = SplitDataset(self.base_path, self.segmented_path, files=fst_files, labels=fst_labels, transform=fst_tf, is_test=self.is_test)
-        snd_dataset = SplitDataset(self.base_path, self.segmented_path, files=snd_files, labels=snd_labels, transform=snd_tf, is_test=self.is_test)
+
+        fst_dataset = SplitDataset(
+            self.base_path,
+            self.segmented_path,
+            files=fst_files,
+            labels=fst_labels,
+            img_transform=self.img_transform,
+            mask_transform=self.mask_transform,
+            is_test=self.is_test
+        )
+
+        snd_dataset = SplitDataset(
+            self.base_path,
+            self.segmented_path,
+            files=snd_files,
+            labels=snd_labels,
+            img_transform=self.img_transform,
+            mask_transform=self.mask_transform,
+            is_test=self.is_test
+        )
+
         return fst_dataset, snd_dataset
 
 if __name__ == "__main__":

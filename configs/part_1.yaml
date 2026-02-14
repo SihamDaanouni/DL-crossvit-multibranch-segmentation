@@ -1,9 +1,9 @@
 seed: 42
 
 data:
-  path_to_csv: "datasets/Data_v2.csv"
-  base_image_dir: "datasets/mission_herbonaute_2000"
-  segmented_image_dir: "datasets/mission_herbonaute_2000_seg_black"
+  path_to_csv: "C:\\Users\\julie\\Documents\\Data_Projet\\Data_v2.csv"
+  base_image_dir: "C:\\Users\\julie\\Documents\\Data_Projet\\mission_herbonaute_2000"
+  segmented_image_dir: "C:\\Users\\julie\\Documents\\Data_Projet\\mission_herbonaute_2000_seg_black"
   image_ext: ".jpg"
 
 split:
@@ -22,3 +22,8 @@ model:
 output:
   dir: "outputs/part_1"
   save_best_on: "f1"
+
+training:
+  batch_size: 32
+  epochs: 20
+  lr: 0.001
