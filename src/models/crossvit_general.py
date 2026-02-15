@@ -360,7 +360,7 @@ class RolloutCrossVitClassifier(nn.Module):
             raise ValueError("route values must be 0 or 1 (0=nonseg, 1=seg)")
         
         self.route = list(route)
-        self.backbone = build_backbone(same_resolution=same_resolution, img_size=img_size)
+        self.backbone = build_rollout_backbone(same_resolution=same_resolution, img_size=img_size)
         
         # La tête de classification concatène les sorties des deux branches
         in_dim = sum(self.backbone.embed_dim)
