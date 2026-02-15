@@ -218,9 +218,9 @@ def compute_heatmap(rollout_map, image, is_segmented:int=0, alpha:float=0.6):
     heatmap = alpha * heatmap.unsqueeze(0) + (1-alpha) * image
     return heatmap
 
-def compute_IoU(heatmap, M_plant, quantile:float=0.8):
+def compute_iou(heatmap, M_plant, quantile:float=0.8):
     """
-    Computes the heatmap from a rollout/attention map for an image (segmented or not).
+    Computes the intersection over union for a given heatmap and mask.
 
     Args:
         heatmap: Attention map with continuous values in [0,1], H x W

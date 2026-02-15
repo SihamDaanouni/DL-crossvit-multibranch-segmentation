@@ -37,3 +37,28 @@ def plot_metric(metric, epochs:int, metric_label:str, title:str, save_path:Path)
     plt.grid(True)
     plt.savefig(save_path, format='png', dpi=200, bbox_inches='tight')
     plt.close()
+
+def plot_heatmap(heatmap, base_image=None, save_path:Path=Path("heatmaps/heatmap.png")):
+    if base_image is None:
+        heatmap_np = heatmap.permute(1,2,0).cpu().numpy() # C,H,W -> H,W,C
+        plt.imshow(heatmap_np)
+        plt.axis('off')
+        plt.savefig(save_path, format='png', dpi=200, bbox_inches='tight')
+        plt.close()
+    else:
+        # Créer une figure avec 1 ligne et 2 colonnes de subplots
+        fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+
+        # Afficher les images dans chaque subplot
+        axes[0].imshow(base_image, cmap='viridis')
+        axes[0].set_title("Base Image")
+
+        heatmap_np = heatmap.permute(1,2,0).cpu().numpy() # C,H,W -> H,W,C
+        axes[1].imshow(heatmap_np, cmap='viridis')
+        axes[1].set_title("Heatmap")
+
+        # Ajuster l'espacement entre les subplots
+        plt.tight_layout()
+        plt.axis('off')
+        plt.savefig(save_path, format='png', dpi=200, bbox_inches='tight')
+        plt.close()
