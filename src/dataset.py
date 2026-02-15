@@ -107,21 +107,26 @@ class SplitDataset(Dataset):
 
         return base_tensor, segmented_tensor, int(self.labels[index])
     
-    # Generates all the filenames and associated labels for __getitem__ usage
-    def generate_files_labels(self, csv_path:str, sepv:str=','):
+        # Generates all the filenames and associated labels for __getitem__ usage
+    def generate_files_labels(self, csv_path: str, sepv: str = ','):
         data = pd.read_csv(csv_path, sep=sepv)
-        base_image_files = [file for file in os.listdir(self.base_path) if file.endswith(self.extension)]
-        segmented_images_files = [file for file in os.listdir(self.segmented_path) if file.endswith(self.extension)]
 
-        # Tout les fichiers qui ont une image et sa version segmentée
-        files = [code + self.extension for code in data['code'].to_list() if (code + self.extension) in base_image_files and (code + self.extension) in segmented_images_files]
-        labels = data['epines']
+        base_image_files = set(os.listdir(self.base_path))
+        segmented_image_files = set(os.listdir(self.segmented_path))
 
-        if self.is_test:
-            for i in range(5):
-                print(f"File: {files[i]}, Label: {labels[i]}")
+        files = []
+        labels = []
+
+        for _, row in data.iterrows():
+            filename = row['code'] + self.extension
+
+            if filename in base_image_files and filename in segmented_image_files:
+                if row['epines'] != -1:
+                    files.append(filename)
+                    labels.append(int(row['epines']))
 
         return files, labels
+
     
     def get_split_data(self, split_percentage:float=0.8):
         assert abs(split_percentage) <= 1.0 , "The parameter split_percentage should be between 0.0 and 1.0"

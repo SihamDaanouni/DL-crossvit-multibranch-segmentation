@@ -34,10 +34,10 @@ def compute_metrics(preds: torch.Tensor, labels: torch.Tensor) -> Dict[str, floa
     labels = labels.cpu().numpy()
     return {
         "accuracy": accuracy_score(labels, preds),
-        "f1": f1_score(labels, preds, average="binary")
+        "f1": f1_score(labels, preds, average="macro")
     }
 
-def compute_iou(heatmap: torch.Tensor, seg_mask: torch.Tensor, threshold: float = 0.5) -> float:
+def compute_iou(heatmap: torch.Tensor, seg_mask: torch.Tensor, threshold: float = 0.5):
     """
     Calculer l'IoU entre une heatmap et un masque de segmentation.
     Args:
@@ -53,7 +53,7 @@ def compute_iou(heatmap: torch.Tensor, seg_mask: torch.Tensor, threshold: float 
     intersection = (heatmap * seg_mask).sum(dim=(1, 2))
     union = heatmap.sum(dim=(1, 2)) + seg_mask.sum(dim=(1, 2)) - intersection
     iou = intersection / (union + 1e-6)
-    return iou.mean().item()
+    return iou.mean()
 
 # ====================== ATTENTION ROLLOUT ======================
 def attention_rollout(model: CrossViTBackbone, inputs: List[torch.Tensor]) -> torch.Tensor:
@@ -65,31 +65,29 @@ def attention_rollout(model: CrossViTBackbone, inputs: List[torch.Tensor]) -> to
     Returns:
         Heatmap [B, H, W]
     """
-    # Activer le mode évaluation
-    model.eval()
-    with torch.no_grad():
-        # Forward pour récupérer les poids d'attention
-        xs = model.forward_features(inputs)
-        attn_weights = []
 
-        # Extraire les poids d'attention des blocs
-        for blk in model.blocks:
-            if hasattr(blk, "attn"):
-                attn_weights.append(blk.attn.attn_weights)  # À adapter selon votre implémentation
+    # Forward pour récupérer les poids d'attention
+    xs = model.forward_features(inputs)
+    attn_weights = []
 
-        # Rollout (simplifié)
-        attn_rollout = torch.eye(attn_weights[0].size(-1)).to(inputs[0].device)
-        for attn in attn_weights:
-            attn_rollout = attn @ attn_rollout
+    # Extraire les poids d'attention des blocs
+    for blk in model.blocks:
+        if hasattr(blk, "attn"):
+            attn_weights.append(blk.attn.attn_weights)  # À adapter selon votre implémentation
 
-        # Extraire la heatmap pour le token CLS
-        cls_heatmap = attn_rollout[:, 0, 1:]  # Ignorer le token CLS
-        cls_heatmap = cls_heatmap.reshape(-1, 14, 14)  # Adapter selon la taille de votre grille
-        cls_heatmap = torch.nn.functional.interpolate(
-            cls_heatmap.unsqueeze(1),
-            size=(224, 224),
-            mode="bilinear"
-        ).squeeze(1)
+    # Rollout (simplifié)
+    attn_rollout = torch.eye(attn_weights[0].size(-1)).to(inputs[0].device)
+    for attn in attn_weights:
+        attn_rollout = attn @ attn_rollout
+
+    # Extraire la heatmap pour le token CLS
+    cls_heatmap = attn_rollout[:, 0, 1:]  # Ignorer le token CLS
+    cls_heatmap = cls_heatmap.reshape(-1, 14, 14)  # Adapter selon la taille de votre grille
+    cls_heatmap = torch.nn.functional.interpolate(
+        cls_heatmap.unsqueeze(1),
+        size=(224, 224),
+        mode="bilinear"
+    ).squeeze(1)
 
     return cls_heatmap
 
@@ -126,6 +124,8 @@ def train_epoch(
         # Backward
         optimizer.zero_grad()
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
         optimizer.step()
 
         total_loss += cls_loss.item()
@@ -158,6 +158,12 @@ def evaluate(
     # Calcul des métriques
     all_preds = torch.cat(all_preds, dim=0)
     all_labels = torch.cat(all_labels, dim=0)
+    pred_classes = all_preds.argmax(dim=1).cpu().numpy()
+    true_classes = all_labels.cpu().numpy()
+
+    print("Pred distribution:", np.unique(pred_classes, return_counts=True))
+    print("True distribution:", np.unique(true_classes, return_counts=True))
+
     metrics = compute_metrics(all_preds, all_labels)
 
     return total_loss / len(loader), metrics
@@ -201,12 +207,12 @@ def main():
     # ====================== DATASET & DATALOADERS ======================
     # Transformations pour les images non segmentées
     img_transform = transforms.Compose([
-        transforms.Resize((512, 512)),
+        transforms.Resize((224, 224)),
         transforms.ToTensor()
     ])
 
     mask_transform = transforms.Compose([
-        transforms.Resize((512, 512), interpolation=InterpolationMode.NEAREST),
+        transforms.Resize((224, 224), interpolation=InterpolationMode.NEAREST),
         transforms.ToTensor()
     ])
 
@@ -246,6 +252,10 @@ def main():
 
     # Optimiseur et loss
     optimizer = optim.AdamW(model.parameters(), lr=cfg["training"]["lr"])
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=cfg["training"]["epochs"]
+    )
     criterion = nn.CrossEntropyLoss()
 
     # ====================== ENTRAÎNEMENT (MODE TRAIN) ======================
@@ -267,7 +277,7 @@ def main():
 
             # Évaluation
             val_loss, metrics = evaluate(model, val_loader, criterion, device)
-
+            scheduler.step()
             # Historique
             history["train_loss"].append(train_loss)
             history["val_loss"].append(val_loss)
@@ -348,6 +358,6 @@ def main():
             # Calculer l'IoU
             iou = compute_iou(heatmaps[i].unsqueeze(0), seg[i].unsqueeze(0))
             print(f"Exemple {i + 1} | IoU: {iou:.4f}")
-
+import pandas as pd
 if __name__ == "__main__":
     main()
