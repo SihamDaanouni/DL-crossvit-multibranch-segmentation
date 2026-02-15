@@ -17,7 +17,8 @@ from torchvision.transforms import InterpolationMode
 
 
 from src.dataset import SplitDataset  
-from src.models.crossvit_general import CrossViTClassifier, CrossViTBackbone  
+from src.models.crossvit_general import CrossViTClassifier, RolloutCrossVitClassifier, RolloutCrossVitBackbone
+from src.utils.metrics import compute_metrics, compute_rollout, compute_heatmap, compute_iou, compute_iou_loss
 
 
 # ====================== CONFIGURATION ======================
@@ -27,70 +28,6 @@ def load_config(config_path: str) -> Dict:
         cfg = yaml.safe_load(f)
     return cfg
 
-# ====================== METRIQUES ======================
-def compute_metrics(preds: torch.Tensor, labels: torch.Tensor) -> Dict[str, float]:
-    """Calculer Accuracy et F1-score."""
-    preds = preds.argmax(dim=1).cpu().numpy()
-    labels = labels.cpu().numpy()
-    return {
-        "accuracy": accuracy_score(labels, preds),
-        "f1": f1_score(labels, preds, average="macro")
-    }
-
-def compute_iou(heatmap: torch.Tensor, seg_mask: torch.Tensor, threshold: float = 0.5):
-    """
-    Calculer l'IoU entre une heatmap et un masque de segmentation.
-    Args:
-        heatmap: [B, H, W] (valeurs entre 0 et 1)
-        seg_mask: [B, 1, H, W] (masque binaire)
-        threshold: Seuil pour binariser la heatmap
-    Returns:
-        IoU moyen sur le batch
-    """
-    heatmap = (heatmap > threshold).float()
-    seg_mask = seg_mask.squeeze(1).float()
-
-    intersection = (heatmap * seg_mask).sum(dim=(1, 2))
-    union = heatmap.sum(dim=(1, 2)) + seg_mask.sum(dim=(1, 2)) - intersection
-    iou = intersection / (union + 1e-6)
-    return iou.mean()
-
-# ====================== ATTENTION ROLLOUT ======================
-def attention_rollout(model: CrossViTBackbone, inputs: List[torch.Tensor]) -> torch.Tensor:
-    """
-    Calculer la heatmap d'attention via rollout.
-    Args:
-        model: Modèle CrossViT
-        inputs: Liste des entrées [nonseg, seg]
-    Returns:
-        Heatmap [B, H, W]
-    """
-
-    # Forward pour récupérer les poids d'attention
-    xs = model.forward_features(inputs)
-    attn_weights = []
-
-    # Extraire les poids d'attention des blocs
-    for blk in model.blocks:
-        if hasattr(blk, "attn"):
-            attn_weights.append(blk.attn.attn_weights)  # À adapter selon votre implémentation
-
-    # Rollout (simplifié)
-    attn_rollout = torch.eye(attn_weights[0].size(-1)).to(inputs[0].device)
-    for attn in attn_weights:
-        attn_rollout = attn @ attn_rollout
-
-    # Extraire la heatmap pour le token CLS
-    cls_heatmap = attn_rollout[:, 0, 1:]  # Ignorer le token CLS
-    cls_heatmap = cls_heatmap.reshape(-1, 14, 14)  # Adapter selon la taille de votre grille
-    cls_heatmap = torch.nn.functional.interpolate(
-        cls_heatmap.unsqueeze(1),
-        size=(224, 224),
-        mode="bilinear"
-    ).squeeze(1)
-
-    return cls_heatmap
-
 # ====================== ENTRAÎNEMENT ======================
 def train_epoch(
     model: nn.Module,
@@ -98,7 +35,8 @@ def train_epoch(
     criterion: nn.Module,
     optimizer: optim.Optimizer,
     device: torch.device,
-    iou_weight: float = 0.1
+    iou_weight: float = 0.3,
+    use_iou_loss:bool=False
 ) -> Tuple[float, float]:
     """Entraîner le modèle pour une époque."""
     model.train()
@@ -108,15 +46,18 @@ def train_epoch(
         nonseg, seg, labels = nonseg.to(device), seg.to(device), labels.to(device)
 
         # Forward
-        outputs = model(nonseg, seg)
+        if isinstance(model, CrossViTClassifier):
+            outputs = model(nonseg, seg)
+        elif isinstance(model, RolloutCrossVitClassifier):
+            outputs, all_attn = model(nonseg, seg)
+        
         cls_loss = criterion(outputs, labels)
 
-        # Calcul de l'IoU (si segmenté)
-        if seg.size(1) == 1:  # Masque binaire
-            heatmap = attention_rollout(model.backbone, [nonseg, seg])
-            iou_loss = 1 - compute_iou(heatmap, seg)
-        else:
-            iou_loss = 0.0
+        iou_loss = 0.0
+        if use_iou_loss:
+            rollout = compute_rollout(all_attn,model.route[1])
+            overlays = compute_heatmap(rollout, seg, alpha=0.6)
+            iou_loss = compute_iou_loss(overlays, seg)
 
         # Loss totale
         loss = cls_loss + iou_weight * iou_loss
@@ -137,21 +78,38 @@ def evaluate(
     model: nn.Module,
     loader: DataLoader,
     criterion: nn.Module,
-    device: torch.device
+    device: torch.device,
+    iou_weight: float = 0.3,
+    use_iou_loss:bool=False
 ) -> Tuple[float, Dict[str, float]]:
     """Évaluer le modèle sur un ensemble de données."""
     model.eval()
-    total_loss = 0.0
+    total_loss, total_iou_loss = 0.0, 0.0
     all_preds, all_labels = [], []
 
     with torch.no_grad():
         for nonseg, seg, labels in tqdm(loader, desc="Evaluating"):
             nonseg, seg, labels = nonseg.to(device), seg.to(device), labels.to(device)
 
-            outputs = model(nonseg, seg)
-            loss = criterion(outputs, labels)
+            # Forward
+            if isinstance(model, CrossViTClassifier):
+                outputs = model(nonseg, seg)
+            elif isinstance(model, RolloutCrossVitClassifier):
+                outputs, all_attn = model(nonseg, seg)
+            
+            cls_loss = criterion(outputs, labels)
+
+            iou_loss = 0.0
+            if use_iou_loss:
+                rollout = compute_rollout(all_attn,model.route[1])
+                overlays = compute_heatmap(rollout, seg, alpha=0.6)
+                iou_loss = compute_iou_loss(overlays, seg)
+
+            # Loss totale
+            loss = cls_loss + iou_weight * iou_loss
 
             total_loss += loss.item()
+            total_iou_loss += iou_loss
             all_preds.append(outputs)
             all_labels.append(labels)
 
@@ -166,7 +124,7 @@ def evaluate(
 
     metrics = compute_metrics(all_preds, all_labels)
 
-    return total_loss / len(loader), metrics
+    return total_loss / len(loader), total_iou_loss / len(loader), metrics
 
 # ====================== MAIN ======================
 def main():
@@ -242,13 +200,22 @@ def main():
     )
 
     # ====================== MODÈLE ======================
-    model = CrossViTClassifier(
-        same_resolution=config["same_resolution"],
-        route=config["route"],
-        num_classes=2,
-        img_size=224,
-        patch_weighting=config["pw"]
-    ).to(device)
+    if config != 5:
+        model = CrossViTClassifier(
+            same_resolution=config["same_resolution"],
+            route=config["route"],
+            num_classes=2,
+            img_size=224,
+            patch_weighting=config["pw"]
+        ).to(device)
+    else:
+        model = RolloutCrossVitClassifier(
+            same_resolution=config["same_resolution"],
+            route=config["route"],
+            num_classes=2,
+            img_size=224,
+            patch_weighting=config["pw"]
+        ).to(device)
 
     # Optimiseur et loss
     optimizer = optim.AdamW(model.parameters(), lr=cfg["training"]["lr"])
@@ -326,11 +293,14 @@ def main():
         model.load_state_dict(torch.load(f"best_model_{args.config_name}.pth"))
 
         # Extraire un batch
-        nonseg, seg, labels = next(iter(val_loader))
+        nonseg, seg, _ = next(iter(val_loader))
         nonseg, seg = nonseg.to(device), seg.to(device)
 
-        # Générer les heatmaps
-        heatmaps = attention_rollout(model.backbone, [nonseg, seg])
+        # Rollout, Heatmap & IoUs
+        if isinstance(model, RolloutCrossVitClassifier):
+            _ , all_attn = model([nonseg, seg])
+            rollout = compute_rollout(all_attn, model.route[1])
+            heatmaps = compute_heatmap(rollout, seg, alpha=0.6) # 1: Heatmaps for Segmented branch batch
 
         # Afficher les résultats
         for i in range(min(3, len(nonseg))):  # Afficher 3 exemples
@@ -358,6 +328,6 @@ def main():
             # Calculer l'IoU
             iou = compute_iou(heatmaps[i].unsqueeze(0), seg[i].unsqueeze(0))
             print(f"Exemple {i + 1} | IoU: {iou:.4f}")
-import pandas as pd
+
 if __name__ == "__main__":
     main()
