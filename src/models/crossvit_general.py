@@ -1,3 +1,30 @@
+seed: 42
+
+data:
+  path_to_csv: "datasets/Data_v2.csv"
+  base_image_dir: "datasets/mission_herbonaute_2000"
+  segmented_image_dir: "datasets/mission_herbonaute_2000_seg_black"
+
+part_1.yaml
+1 Ko
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+from typing import List, Sequence, Union
+
+crossvit_general.py
+16 Ko
+# Copyright IBM All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+
+"""
+Modifed from Timm. https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/vision_transformer.py
+
+crossvit.py
+22 Ko
+ 
 from __future__ import annotations
 
 import sys
@@ -11,7 +38,7 @@ import torch.nn.functional as F
 VENDOR_PATH = Path(__file__).resolve().parents[2] / "vendor" / "crossvit_ibm"
 sys.path.insert(0, str(VENDOR_PATH))
 
-from ...vendor.crossvit_ibm.models.crossvit import VisionTransformer as IBMVisionTransformer, _compute_num_patches
+from vendor.crossvit_ibm.models.crossvit import VisionTransformer as IBMVisionTransformer, _compute_num_patches
 from .rollout_crossvit import MultiScaleBlockMap
 
 
