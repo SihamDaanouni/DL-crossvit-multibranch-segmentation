@@ -6,11 +6,38 @@ from typing import List, Sequence, Union
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 VENDOR_PATH = Path(__file__).resolve().parents[2] / "vendor" / "crossvit_ibm"
 sys.path.insert(0, str(VENDOR_PATH))
 
 from models.crossvit import VisionTransformer as IBMVisionTransformer  
+
+
+
+def compute_patch_weights(mask_tensor, patch_size=16, gamma=1.0, epsilon=0.01):
+    """
+    Calcule wp = (epsilon + rp)^gamma avec normalisation unitaire[cite: 48, 51, 52].
+    rp est le ratio de pixels plante dans le patch[cite: 48].
+    """
+    # 1. Masque binaire : 1 si pixel > 0 (plante), 0 sinon
+    binary_mask = (mask_tensor.mean(dim=1, keepdim=True) > 0.05).float()
+    
+    # 2. Calcul du ratio rp par patch (aligné avec la grille ViT) [cite: 47, 48]
+    rp = F.avg_pool2d(binary_mask, kernel_size=patch_size, stride=patch_size)
+    
+    # 3. Redimensionnement en [B, N, 1] pour la multiplication des tokens
+    rp = rp.flatten(2).transpose(1, 2)
+    
+    # 4. Fonction puissance f(rp) [cite: 51]
+    wp = torch.pow(epsilon + rp, gamma)
+    
+    # 5. Normalisation unitaire par image [cite: 52]
+    wp = wp / (wp.mean(dim=1, keepdim=True) + 1e-8)
+    
+    return wp
+
+
 
 class CrossViTBackbone(IBMVisionTransformer):
     """
@@ -20,7 +47,7 @@ class CrossViTBackbone(IBMVisionTransformer):
       - Gérer l'interpolation automatique si la taille d'entrée != taille attendue (ex: 224 -> 240)
     Retourne les tokens CLS par branche.
     """
-    def forward_features(self, x: Union[torch.Tensor, List[torch.Tensor]]):
+    def forward_features(self, x: Union[torch.Tensor, List[torch.Tensor]], weights: torch.Tensor = None):
         # 1. Gestion des entrées (Routing)
         if isinstance(x, torch.Tensor):
             # Cas A ou B : même image envoyée aux deux branches
@@ -45,7 +72,12 @@ class CrossViTBackbone(IBMVisionTransformer):
                     xi, size=(self.img_size[i], self.img_size[i]), mode="bicubic", align_corners=False
                 )
 
+	    # Patch Embedding
             tmp = self.patch_embed[i](xi)
+
+            # --- PARTIE 3 : Application des poids par patch [cite: 19, 54] ---
+            if weights is not None:
+                tmp = tmp * weights # Propagation aux patches co-localisés
             cls_tokens = self.cls_token[i].expand(B, -1, -1)
             tmp = torch.cat((cls_tokens, tmp), dim=1)
             tmp = tmp + self.pos_embed[i]
@@ -62,8 +94,8 @@ class CrossViTBackbone(IBMVisionTransformer):
         # Retourne uniquement le token CLS (index 0) de chaque branche
         return [t[:, 0] for t in xs]
 
-    def forward(self, x: Union[torch.Tensor, List[torch.Tensor]]):
-        return self.forward_features(x)
+    def forward(self, x: Union[torch.Tensor, List[torch.Tensor]], weights: torch.Tensor = None):
+        return self.forward_features(x, weights=weights)
 
 
 def build_backbone(*, same_resolution: bool, img_size: int = 224) -> CrossViTBackbone:
@@ -103,7 +135,7 @@ def build_backbone(*, same_resolution: bool, img_size: int = 224) -> CrossViTBac
         depth = ([1, 4, 0], [1, 4, 0], [1, 4, 0])
         mlp_ratio = (4.0, 4.0, 1.0)
 
-    return CrossViTBackbone(
+    backbone = CrossViTBackbone(
         img_size=img_size_list,
         patch_size=patch_size,
         in_chans=3,
@@ -119,6 +151,10 @@ def build_backbone(*, same_resolution: bool, img_size: int = 224) -> CrossViTBac
         multi_conv=False,
     )
 
+    backbone.embed_dim = embed_dim
+    return backbone
+
+
 
 class CrossViTClassifier(nn.Module):
     """
@@ -132,8 +168,11 @@ class CrossViTClassifier(nn.Module):
         route: Sequence[int],          # ex: [0, 0] pour A, [0, 1] pour C1
         num_classes: int = 2,
         img_size: int = 224,
+        patch_weighting: bool = False, # Optionnel pour O3
     ):
+        
         super().__init__()
+        self.patch_weighting = patch_weighting
         # Vérifications de sécurité
         if len(route) != 2:
             raise ValueError("route must have length 2 (for 2 branches)")
@@ -148,6 +187,13 @@ class CrossViTClassifier(nn.Module):
         self.head = nn.Linear(in_dim, num_classes)
 
     def forward(self, x_nonseg: torch.Tensor, x_seg: torch.Tensor) -> torch.Tensor:
+        
+        # Calcul des poids optionnel (Partie 3) [cite: 46]
+        weights = None
+        if self.patch_weighting:
+            # On utilise le masque segmenté (x_seg) pour calculer les poids [cite: 46]
+            weights = compute_patch_weights(x_seg, patch_size=16, gamma=1.0)
+        
         # Préparation des sources
         sources = (x_nonseg, x_seg)
         
@@ -158,7 +204,7 @@ class CrossViTClassifier(nn.Module):
         # Passage dans le backbone
         # Le backbone gère l'interpolation si une branche (ex: Small) a besoin de 240px
         # alors que l'entrée est en 224px.
-        feats = self.backbone(xs) # -> [CLS_Br0, CLS_Br1]
+        feats = self.backbone(xs, weights=weights) # -> [CLS_Br0, CLS_Br1]
         
         # Concaténation et Classification
         x = torch.cat(feats, dim=1)
