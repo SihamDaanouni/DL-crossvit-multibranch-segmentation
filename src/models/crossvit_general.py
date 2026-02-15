@@ -11,7 +11,8 @@ import torch.nn.functional as F
 VENDOR_PATH = Path(__file__).resolve().parents[2] / "vendor" / "crossvit_ibm"
 sys.path.insert(0, str(VENDOR_PATH))
 
-from models.crossvit import VisionTransformer as IBMVisionTransformer  
+from ...vendor.crossvit_ibm.models.crossvit import VisionTransformer as IBMVisionTransformer, _compute_num_patches
+from .rollout_crossvit import MultiScaleBlockMap
 
 
 
@@ -154,7 +155,136 @@ def build_backbone(*, same_resolution: bool, img_size: int = 224) -> CrossViTBac
     backbone.embed_dim = embed_dim
     return backbone
 
+class RolloutCrossVitBackbone(CrossViTBackbone):
+    def __init__(self, img_size=..., patch_size=..., in_chans=3, num_classes=1000, embed_dim=..., depth=..., num_heads=..., mlp_ratio=..., qkv_bias=False, qk_scale=None, drop_rate=0, attn_drop_rate=0, drop_path_rate=0, hybrid_backbone=None, norm_layer=nn.LayerNorm, multi_conv=False):
+        super().__init__(img_size, patch_size, in_chans, num_classes, embed_dim, depth, num_heads, mlp_ratio, qkv_bias, qk_scale, drop_rate, attn_drop_rate, drop_path_rate, hybrid_backbone, norm_layer, multi_conv)
+        num_patches = _compute_num_patches(img_size, patch_size)
+        total_depth = sum([sum(x[-2:]) for x in depth])
+        dpr_ptr = 0
+        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, total_depth)]  # stochastic depth decay rule
 
+        self.blocks = nn.ModuleList()
+        for idx, block_cfg in enumerate(depth):
+            curr_depth = max(block_cfg[:-1]) + block_cfg[-1]
+            dpr_ = dpr[dpr_ptr:dpr_ptr + curr_depth]
+            blk = MultiScaleBlockMap(embed_dim, num_patches, block_cfg, num_heads=num_heads, mlp_ratio=mlp_ratio,
+                                  qkv_bias=qkv_bias, qk_scale=qk_scale, drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr_,
+                                  norm_layer=norm_layer)
+            dpr_ptr += curr_depth
+            self.blocks.append(blk)
+    
+    def forward_features(self, x: Union[torch.Tensor, List[torch.Tensor]], weights: torch.Tensor = None):
+        # 1. Gestion des entrées (Routing)
+        if isinstance(x, torch.Tensor):
+            # Cas A ou B : même image envoyée aux deux branches
+            xs_in = [x for _ in range(self.num_branches)]
+        else:
+            # Cas C1 ou C2 : images différentes par branche
+            if len(x) != self.num_branches:
+                raise ValueError(f"Expected {self.num_branches} inputs, got {len(x)}")
+            xs_in = x
+
+        B = xs_in[0].shape[0]
+        xs = []
+        
+        # 2. Préparation par branche (Interpolation + Patch Embed + Pos Embed)
+        for i in range(self.num_branches):
+            xi = xs_in[i]
+            _, _, H, W = xi.shape
+            
+            # Si la branche attend 240px (Small) et reçoit 224px, on interpole.
+            if H != self.img_size[i]:
+                xi = torch.nn.functional.interpolate(
+                    xi, size=(self.img_size[i], self.img_size[i]), mode="bicubic", align_corners=False
+                )
+
+	    # Patch Embedding
+            tmp = self.patch_embed[i](xi)
+
+            # --- PARTIE 3 : Application des poids par patch  ---
+            if weights is not None:
+                tmp = tmp * weights # Propagation aux patches co-localisés
+            cls_tokens = self.cls_token[i].expand(B, -1, -1)
+            tmp = torch.cat((cls_tokens, tmp), dim=1)
+            tmp = tmp + self.pos_embed[i]
+            tmp = self.pos_drop(tmp)
+            xs.append(tmp)
+
+        # 3. Passage dans les blocs (inclut la Cross-Attention définie dans self.blocks)
+        #    Ajout de l'attention si validation/evaluation
+        all_attn = []
+        if not self.training:
+            for blk in self.blocks:
+                xs, multi_blk_attn = blk(xs)
+                all_attn.append(multi_blk_attn)
+        else:
+            for blk in self.blocks:
+                xs, _ = blk(xs)
+
+        # 4. Normalisation finale
+        xs = [self.norm[i](t) for i, t in enumerate(xs)]
+        
+        # Retourne le token CLS (index 0) de chaque branche et les matrices d'attention pour le rollout
+        return [t[:, 0] for t in xs], all_attn
+
+    def forward(self, x: Union[torch.Tensor, List[torch.Tensor]], weights: torch.Tensor = None):
+        return self.forward_features(x, weights=weights)
+
+def build_rollout_backbone(*, same_resolution: bool, img_size: int = 224) -> RolloutCrossVitBackbone:
+    """
+    Construction du Backbone selon les configurations du projet. Version avec Rollout
+    
+    Args:
+        same_resolution: 
+            False -> Partie 1 (Small/Large type CrossViT-Small)
+            True  -> Partie 2 (Même patch size, même nb tokens)
+        img_size: Taille de l'image d'entrée (généralement 224)
+    """
+    if same_resolution:
+        # --- PARTIE 2 : CONFIGURATION ISO-RÉSOLUTION ---
+        # On force les deux branches à être identiques structurellement
+        img_size_list = (img_size, img_size)
+        patch_size = (16, 16)
+        embed_dim = (192, 192) # On aligne sur la dimension Small
+        num_heads = (3, 3)
+        # Profondeur légère pour l'expérience
+        depth = ([1, 3, 1], [1, 3, 1], [1, 3, 1])
+        mlp_ratio = (2.0, 2.0, 4.0)
+        
+    else:
+        # --- PARTIE 1 : CONFIGURATION REFERENCE (CrossViT-Small) ---
+        # Basé strictement sur 'crossvit_small_224' d'IBM
+        
+        # Branche 0 (Small): Patch 12 => Image 240 (240 / 12 = 20 tokens)
+        # Branche 1 (Large): Patch 16 => Image 224 (224 / 16 = 14 tokens)
+        img_size_list = (240, 224) 
+        
+        patch_size = (12, 16)
+        embed_dim = (192, 384)
+        num_heads = (6, 6) # Selon config officielle Small
+        
+        # Configuration officielle de la profondeur pour Small
+        depth = ([1, 4, 0], [1, 4, 0], [1, 4, 0])
+        mlp_ratio = (4.0, 4.0, 1.0)
+
+    backbone = RolloutCrossVitBackbone(
+        img_size=img_size_list,
+        patch_size=patch_size,
+        in_chans=3,
+        num_classes=2,  # Pour éviter le 1000 par défaut dans ibm
+        embed_dim=embed_dim,
+        depth=depth,
+        num_heads=num_heads,
+        mlp_ratio=mlp_ratio,
+        qkv_bias=True,
+        drop_rate=0.0,
+        attn_drop_rate=0.0,
+        drop_path_rate=0.0,
+        multi_conv=False,
+    )
+
+    backbone.embed_dim = embed_dim
+    return backbone
 
 class CrossViTClassifier(nn.Module):
     """
@@ -209,3 +339,53 @@ class CrossViTClassifier(nn.Module):
         # Concaténation et Classification
         x = torch.cat(feats, dim=1)
         return self.head(x)
+
+class RolloutCrossVitClassifier(nn.Module):
+    def __init__(
+        self,
+        *,
+        same_resolution: bool,
+        route: Sequence[int],          # ex: [0, 0] pour A, [0, 1] pour C1
+        num_classes: int = 2,
+        img_size: int = 224,
+        patch_weighting: bool = False, # Optionnel pour O3
+    ):
+        
+        super().__init__()
+        self.patch_weighting = patch_weighting
+        # Vérifications de sécurité
+        if len(route) != 2:
+            raise ValueError("route must have length 2 (for 2 branches)")
+        if any(r not in (0, 1) for r in route):
+            raise ValueError("route values must be 0 or 1 (0=nonseg, 1=seg)")
+        
+        self.route = list(route)
+        self.backbone = build_backbone(same_resolution=same_resolution, img_size=img_size)
+        
+        # La tête de classification concatène les sorties des deux branches
+        in_dim = sum(self.backbone.embed_dim)
+        self.head = nn.Linear(in_dim, num_classes)
+
+    def forward(self, x_nonseg: torch.Tensor, x_seg: torch.Tensor) -> torch.Tensor:
+        
+        # Calcul des poids optionnel (Partie 3) 
+        weights = None
+        if self.patch_weighting:
+            # On utilise le masque segmenté (x_seg) pour calculer les poids 
+            weights = compute_patch_weights(x_seg, patch_size=16, gamma=1.0)
+        
+        # Préparation des sources
+        sources = (x_nonseg, x_seg)
+        
+        # Routing dynamique selon la configuration (A, B, C1, C2)
+        # xs est une liste [Tensor_pour_Branche0, Tensor_pour_Branche1]
+        xs = [sources[self.route[0]], sources[self.route[1]]]
+        
+        # Passage dans le backbone
+        # Le backbone gère l'interpolation si une branche (ex: Small) a besoin de 240px
+        # alors que l'entrée est en 224px.
+        feats, all_attn = self.backbone(xs, weights=weights) # -> [CLS_Br0, CLS_Br1]
+        
+        # Concaténation et Classification
+        x = torch.cat(feats, dim=1)
+        return self.head(x), all_attn

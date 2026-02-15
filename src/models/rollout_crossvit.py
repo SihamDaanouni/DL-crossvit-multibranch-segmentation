@@ -8,7 +8,7 @@ import torch
 from torch import nn as nn
 from torch.nn import functional as F
 
-from ...vendor.crossvit_ibm.models.crossvit import MultiScaleBlock, VisionTransformer
+from ...vendor.crossvit_ibm.models.crossvit import MultiScaleBlock, VisionTransformer, _compute_num_patches
 
 @torch.fx.wrap
 @register_notrace_function
@@ -118,52 +118,6 @@ class MultiScaleBlockMap(MultiScaleBlock):
             tmp = torch.cat((reverted_proj_cls_token, outs_b[i][:, 1:, ...]), dim=1)
             outs.append(tmp)
         return outs, all_attn
-
-class RolloutVisionTranformer(VisionTransformer):
-    """ Vision Transformer with support for patch or hybrid CNN input stage.
-    
-    Adapted for rollout, heatmap and IoU within calculs.
-    """
-    def __init__(self, img_size=..., patch_size=..., in_chans=3, num_classes=1000, embed_dim=..., depth=..., num_heads=..., mlp_ratio=..., qkv_bias=False, qk_scale=None, drop_rate=0, attn_drop_rate=0, drop_path_rate=0, hybrid_backbone=None, norm_layer=nn.LayerNorm, multi_conv=False):
-        super().__init__(img_size, patch_size, in_chans, num_classes, embed_dim, depth, num_heads, mlp_ratio, qkv_bias, qk_scale, drop_rate, attn_drop_rate, drop_path_rate, hybrid_backbone, norm_layer, multi_conv)
-    
-    def forward_features(self, x):
-        B, C, H, W = x.shape
-        xs = []
-        for i in range(self.num_branches):
-            x_ = torch.nn.functional.interpolate(x, size=(self.img_size[i], self.img_size[i]), mode='bicubic') if H != self.img_size[i] else x
-            tmp = self.patch_embed[i](x_)
-            cls_tokens = self.cls_token[i].expand(B, -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
-            tmp = torch.cat((cls_tokens, tmp), dim=1)
-            tmp = tmp + self.pos_embed[i]
-            tmp = self.pos_drop(tmp)
-            xs.append(tmp)
-
-        # Adding the attention in MultiScaleBlock operations
-        all_attn = []
-        if not self.training:
-            for blk in self.blocks:
-                xs, multi_blk_attn = blk(xs)
-                all_attn.append(multi_blk_attn)
-
-        # NOTE: was before branch token section, move to here to assure all branch token are before layer norm
-        xs = [self.norm[i](x) for i, x in enumerate(xs)]
-        out = [x[:, 0] for x in xs]
-
-        return out, all_attn
-
-    def forward(self, x):
-        xs, _ = self.forward_features(x)
-        ce_logits = [self.head[i](x) for i, x in enumerate(xs)]
-        ce_logits = torch.mean(torch.stack(ce_logits, dim=0), dim=0)
-        return ce_logits
-    
-    # Another forward function to stay compatible with standards (e.g. model(inputs) for training, model.forward_attention(inputs) for evaluation)
-    def forward_attention(self, x):
-        xs, all_attn = self.forward_features(x)
-        ce_logits = [self.head[i](x) for i, x in enumerate(xs)]
-        ce_logits = torch.mean(torch.stack(ce_logits, dim=0), dim=0)
-        return ce_logits, all_attn
 
 def compute_rollout(all_attn_layers, branch:int = 0):
     """
