@@ -48,27 +48,41 @@ class AttentionMap(Attention):
         return x
 
 class BlockMap(Block):
-    """Transformer block with pre-normalization.
-    
-    Adapted version for rollout calcul from Block in timm.models.vision_transformer
     """
-    def __init__(self, dim, num_heads, mlp_ratio = 4, qkv_bias = False, qk_norm = False, scale_attn_norm = False, scale_mlp_norm = False, proj_bias = True, proj_drop = 0, attn_drop = 0, init_values = None, drop_path = 0, act_layer = nn.GELU, norm_layer = ..., mlp_layer = ..., attn_layer = ..., depth = 0, device=None, dtype=None):
-        super().__init__(dim, num_heads, mlp_ratio, qkv_bias, qk_norm, scale_attn_norm, scale_mlp_norm, proj_bias, proj_drop, attn_drop, init_values, drop_path, act_layer, norm_layer, mlp_layer, attn_layer, depth, device, dtype)
+    Transformer block with pre-normalization.
+    Adapted for attention rollout.
+    """
 
-        dd = {'device': device, 'dtype': dtype}
-        self.attn = AttentionMap(
-            dim,
+    def __init__(
+        self,
+        dim,
+        num_heads,
+        mlp_ratio=4.,
+        qkv_bias=False,
+        qk_norm=False,
+        scale_attn_norm=False,
+        scale_mlp_norm=False,
+        proj_bias=True,
+        proj_drop=0.,
+        attn_drop=0.,
+        init_values=None,
+        drop_path=0.,
+        act_layer=nn.GELU,
+        norm_layer=nn.LayerNorm,
+    ):
+        super().__init__(
+            dim=dim,
             num_heads=num_heads,
+            mlp_ratio=mlp_ratio,
             qkv_bias=qkv_bias,
-            qk_norm=qk_norm,
-            scale_norm=scale_attn_norm,
-            proj_bias=proj_bias,
-            attn_drop=attn_drop,
             proj_drop=proj_drop,
+            attn_drop=attn_drop,
+            drop_path=drop_path,
+            act_layer=act_layer,
             norm_layer=norm_layer,
-            depth=depth,
-            **dd,
+            attn_layer=AttentionMap, 
         )
+
 
 class MultiScaleBlockMap(MultiScaleBlock):
     """
@@ -88,7 +102,7 @@ class MultiScaleBlockMap(MultiScaleBlock):
             for i in range(depth[d]):
                 tmp.append(
                     BlockMap(dim=dim[d], num_heads=num_heads[d], mlp_ratio=mlp_ratio[d], qkv_bias=qkv_bias, 
-                          drop=drop, attn_drop=attn_drop, drop_path=drop_path[i], norm_layer=norm_layer))
+                          proj_drop=drop, attn_drop=attn_drop, drop_path=drop_path[i], norm_layer=norm_layer))
             if len(tmp) != 0:
                 self.blocks.append(nn.Sequential(*tmp))
 

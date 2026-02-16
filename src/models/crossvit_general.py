@@ -213,13 +213,9 @@ class RolloutCrossVitBackbone(CrossViTBackbone):
         # 3. Passage dans les blocs (inclut la Cross-Attention définie dans self.blocks)
         #    Ajout de l'attention si validation/evaluation
         all_attn = []
-        if not self.training:
-            for blk in self.blocks:
-                xs, multi_blk_attn = blk(xs)
-                all_attn.append(multi_blk_attn)
-        else:
-            for blk in self.blocks:
-                xs, _ = blk(xs)
+        for blk in self.blocks:
+            xs, multi_blk_attn = blk(xs)
+            all_attn.append(multi_blk_attn)
 
         # 4. Normalisation finale
         xs = [self.norm[i](t) for i, t in enumerate(xs)]

@@ -1,36 +1,48 @@
 import torch
 import numpy as np
-
+import torch.nn.functional as F
 def compute_iou(heatmap, M_plant, quantile=0.5):
     """
     Computes IoU between heatmap and binary mask.
-    
-    Args:
-        heatmap: Attention maps (Batch x H x W)
-        M_plant: Binary masks (Batch x H x W) or (Batch x C x H x W)
-        quantile: Used for calculating the binary version of each heatmap
     """
-    assert 0.0 <= quantile <= 1.0, "Parameter 'quantile' should be a percentage between 0.0 and 1.0"
 
-    # Convert M_plant to (Batch x H x W) if needed
+    assert 0.0 <= quantile <= 1.0, "Parameter 'quantile' should be between 0.0 and 1.0"
+
+    # Ensure heatmap is (B,H,W)
+    if heatmap.dim() == 4:
+        heatmap = heatmap.squeeze(1)
+
+    # Convert mask to (B,H,W)
     if M_plant.dim() == 4:
-        # Convert RGB/multi-channel to binary by taking mean or max
-        M_plant = M_plant.mean(dim=1)  # (Batch x H x W)
-    
-    # Binarize the plant mask (anything > threshold is plant)
+        M_plant = M_plant.mean(dim=1)
+
+    # Binarize mask
     M_plant = (M_plant > 0.05).bool()
 
-    # Calcul du seuil pour chaque heatmap du batch et conversion en carte binaire
-    threshold = torch.quantile(heatmap, q=quantile, dim=(1, 2), keepdim=True)
-    M_pred = (heatmap >= threshold)
+    B = heatmap.shape[0]
 
-    # Calcul de l'intersection et de l'union pour chaque paire
+    # ✅ Flatten spatial dims
+    heatmap_flat = heatmap.view(B, -1)
+
+    threshold = torch.quantile(
+        heatmap_flat,
+        q=quantile,
+        dim=1,
+        keepdim=True
+    )
+
+    threshold = threshold.view(B, 1, 1)
+
+    # Binary prediction
+    M_pred = heatmap >= threshold
+
+    # IoU
     intersection = (M_pred & M_plant).sum(dim=(1, 2))
     union = (M_pred | M_plant).sum(dim=(1, 2))
+
     iou = intersection.float() / (union.float() + 1e-6)
 
     return iou
-
 
 def compute_heatmap(rollout, seg, alpha=0.6):
     """
@@ -116,60 +128,70 @@ def compute_iou_loss(heatmap, M_plant):
 
 
 def compute_rollout(attention_maps, branch_idx):
-    """
-    Compute attention rollout from multi-scale attention maps.
-    """
-    # Preserve device from input
-    if isinstance(attention_maps, (list, tuple)) and len(attention_maps) > 0:
-        if isinstance(attention_maps[0], (list, tuple)) and len(attention_maps[0]) > 0:
-            device = attention_maps[0][0].device
-        else:
-            device = attention_maps[0].device
-    else:
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
-    # Extract attention for the specified branch
-    if isinstance(attention_maps, (list, tuple)):
-        if branch_idx < len(attention_maps):
-            attn_list = attention_maps[branch_idx]
-        else:
-            attn_list = attention_maps[-1]
-    else:
-        attn_list = [attention_maps]
-    
-    # Process attention maps
-    rollout = None
-    for attn in attn_list:
-        if attn.dim() == 4:  # (Batch x Heads x Tokens x Tokens)
-            # Average over heads
-            attn_avg = attn.mean(dim=1)  # (Batch x Tokens x Tokens)
-            
-            # Add identity and normalize
-            I = torch.eye(attn_avg.size(-1), device=device).unsqueeze(0)
-            attn_avg = attn_avg + I
-            attn_avg = attn_avg / attn_avg.sum(dim=-1, keepdim=True)
-            
-            # Cumulative product
-            if rollout is None:
-                rollout = attn_avg
-            else:
-                rollout = torch.bmm(attn_avg, rollout)
-    
-    if rollout is None:
-        raise ValueError("No valid attention maps found")
-    
-    # Extract CLS attention to patches
-    cls_attn = rollout[:, 0, 1:]  # (Batch x num_patches)
-    
-    # Reshape to spatial dimensions
-    batch_size = cls_attn.shape[0]
-    num_patches = cls_attn.shape[1]
-    patch_size = int(np.sqrt(num_patches))
-    
-    rollout_spatial = cls_attn.reshape(batch_size, patch_size, patch_size)
-    
-    return rollout_spatial
 
+    if not attention_maps:
+        raise ValueError("Empty attention maps")
+
+    # Flatten structure to get tensors of chosen branch
+    attn_list = []
+
+    for layer in attention_maps:
+        if not isinstance(layer, list):
+            continue
+
+        if branch_idx >= len(layer):
+            continue
+
+        branch_data = layer[branch_idx]
+
+        # branch_data can be tensor OR list of tensors
+        if isinstance(branch_data, list):
+            for item in branch_data:
+                if torch.is_tensor(item):
+                    attn_list.append(item)
+        elif torch.is_tensor(branch_data):
+            attn_list.append(branch_data)
+
+    if not attn_list:
+        raise ValueError("No valid attention tensors found")
+
+    device = attn_list[0].device
+
+    rollout = None
+
+    for attn in attn_list:
+
+        # (B, Heads, Tokens, Tokens)
+        attn_avg = attn.mean(dim=1)
+
+        I = torch.eye(attn_avg.size(-1), device=device).unsqueeze(0)
+        attn_avg = attn_avg + I
+        attn_avg = attn_avg / attn_avg.sum(dim=-1, keepdim=True)
+
+        if rollout is None:
+            rollout = attn_avg
+        else:
+            rollout = torch.bmm(attn_avg, rollout)
+
+    # CLS → patches
+    cls_attn = rollout[:, 0, 1:]
+
+    B = cls_attn.shape[0]
+    num_patches = cls_attn.shape[1]
+    side = int(num_patches ** 0.5)
+
+    rollout_spatial = cls_attn.reshape(B, side, side)
+
+    rollout_spatial = rollout_spatial.unsqueeze(1)  # (B,1,14,14)
+
+    rollout_upsampled = F.interpolate(
+        rollout_spatial,
+        size=(224, 224),
+        mode="bilinear",
+        align_corners=False
+    )
+
+    return rollout_upsampled.squeeze(1)  # (B,224,224)
 
 def compute_metrics(predictions, labels):
     """
@@ -182,7 +204,7 @@ def compute_metrics(predictions, labels):
     Returns:
         dict: Dictionary with accuracy and F1 score
     """
-    from sklearn.metrics import accuracy_score, f1_score
+    from sklearn.metrics import accuracy_score, f1_score, classification_report
     
     if torch.is_tensor(predictions):
         predictions = predictions.cpu().numpy()
@@ -191,5 +213,6 @@ def compute_metrics(predictions, labels):
     
     return {
         'accuracy': accuracy_score(labels, predictions),
-        'f1': f1_score(labels, predictions, average='weighted', zero_division=0)
+        'f1': f1_score(labels, predictions, average='weighted', zero_division=0),
+        'classification_report': classification_report(labels, predictions, zero_division=0)
     }

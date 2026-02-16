@@ -11,7 +11,7 @@ split:
   train_val: 0.80
 
 model:
-  epochs: 10
+  epochs: 10 
   batch_size: 16
   lr: 0.00003
   weight_decay: 0.05
@@ -58,4 +58,10 @@ O5:
   same_resolution: True
   pw: False
   iou_weight: 0.1
-  desc: "Iso-resolution + loss IoU"
+  desc: "Iso-resolution + loss IoU without patch weighting"
+O6: 
+  route: [0, 1]
+  same_resolution: True
+  pw: True
+  iou_weight: 0.1
+  desc: "Iso-resolution + loss IoU with patch weighting"

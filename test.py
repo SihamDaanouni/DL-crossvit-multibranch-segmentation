@@ -2,6 +2,7 @@ import argparse
 import os
 import sys
 from pathlib import Path
+from sklearn import metrics
 import yaml
 import numpy as np
 import torch
@@ -11,7 +12,7 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 from tqdm import tqdm
 import matplotlib.pyplot as plt
-from sklearn.metrics import accuracy_score, f1_score
+from sklearn.metrics import accuracy_score, f1_score, classification_report
 from typing import List, Tuple, Dict, Optional
 from torchvision.transforms import InterpolationMode
 
@@ -191,7 +192,8 @@ def evaluate(
     
     metrics = {
         'accuracy': accuracy_score(all_labels, all_preds),
-        'f1': f1_score(all_labels, all_preds, average='weighted', zero_division=0)
+        'f1': f1_score(all_labels, all_preds, average='weighted', zero_division=0),
+        'classification_report': classification_report(all_labels, all_preds, zero_division=0)
     }
 
     return total_loss / len(loader), total_iou_loss / len(loader), metrics
@@ -211,7 +213,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    cfg_name = cfg_name
+    cfg_name = args.config_name
     print(f"\nConfiguration: {cfg_name} - {cfg[cfg_name]['desc']}")
 
     # Dataset & DataLoaders
@@ -240,14 +242,14 @@ def main():
         train_set,
         batch_size=cfg["model"]["batch_size"],
         shuffle=True,
-        num_workers=2,
+        num_workers=4,
         pin_memory=(device.type == 'cuda')  # Speed up data transfer to GPU
     )
     val_loader = DataLoader(
         val_set,
         batch_size=cfg["model"]["batch_size"],
         shuffle=False,
-        num_workers=2,
+        num_workers=4,
         pin_memory=(device.type == 'cuda')
     )
 
@@ -292,13 +294,11 @@ def main():
             train_loss, train_iou_loss = train_epoch(
                 model, train_loader, criterion, optimizer, device,
                 iou_weight=cfg[cfg_name].get("iou_weight", 0.0),
-                use_iou_loss=(cfg_name == "O5")
             )
             
             val_loss, val_iou_loss, metrics = evaluate(
                 model, val_loader, criterion, device,
                 iou_weight=cfg[cfg_name].get("iou_weight", 0.0),
-                use_iou_loss=(cfg_name == "O5")
             )
             
             scheduler.step()
@@ -336,7 +336,7 @@ def main():
 
     elif args.mode == "eval":
         print("\n=== Évaluation ===")
-        model.load_state_dict(torch.load(f"best_model_{cfg_name}.pth", map_location=device))
+        model.load_state_dict(torch.load(f"best_model_{cfg_name}.pth", map_location=device, weights_only=True))
         val_loss, iou_loss, metrics = evaluate(
             model, val_loader, criterion, device,
             iou_weight=cfg[cfg_name].get("iou_weight", 0.0),
@@ -344,10 +344,11 @@ def main():
         )
         print(f"Val Loss: {val_loss:.4f} | IoU Loss: {iou_loss:.4f}")
         print(f"Accuracy: {metrics['accuracy']:.4f} | F1: {metrics['f1']:.4f}")
-
+        print("\nClassification Report:")
+        print(metrics['classification_report'])
     elif args.mode == "interpret":
         print("\n=== Interprétabilité ===")
-        model.load_state_dict(torch.load(f"best_model_{cfg_name}.pth", map_location=device))
+        model.load_state_dict(torch.load(f"best_model_{cfg_name}.pth", map_location=device, weights_only=True))
 
         nonseg, seg, _ = next(iter(val_loader))
         nonseg, seg = nonseg.to(device), seg.to(device)
