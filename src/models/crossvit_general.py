@@ -11,7 +11,7 @@ import torch.nn.functional as F
 VENDOR_PATH = Path(__file__).resolve().parents[2] / "vendor" / "crossvit_ibm"
 sys.path.insert(0, str(VENDOR_PATH))
 
-from ...vendor.crossvit_ibm.models.crossvit import VisionTransformer as IBMVisionTransformer, _compute_num_patches
+from vendor.crossvit_ibm.models.crossvit import VisionTransformer as IBMVisionTransformer, _compute_num_patches
 from .rollout_crossvit import MultiScaleBlockMap
 
 

@@ -8,7 +8,7 @@ import torch
 from torch import nn as nn
 from torch.nn import functional as F
 
-from ...vendor.crossvit_ibm.models.crossvit import MultiScaleBlock, VisionTransformer, _compute_num_patches
+from vendor.crossvit_ibm.models.crossvit import MultiScaleBlock, VisionTransformer, _compute_num_patches
 
 @torch.fx.wrap
 @register_notrace_function
