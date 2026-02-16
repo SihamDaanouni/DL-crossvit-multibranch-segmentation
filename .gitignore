@@ -36,6 +36,7 @@ wheels/
 *.egg-info
 .venv/
 main.py
+pyproject.toml
 uv.lock
 
 # Project'specific

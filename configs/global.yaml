@@ -1,0 +1,61 @@
+seed: 42
+
+data:
+  path_to_csv: "C:\\Users\\julie\\Documents\\Data_Projet\\Data_v2.csv"
+  base_image_dir: "C:\\Users\\julie\\Documents\\Data_Projet\\mission_herbonaute_2000"
+  segmented_image_dir: "C:\\Users\\julie\\Documents\\Data_Projet\\mission_herbonaute_2000_seg_black"
+  image_ext: ".jpg"
+
+split:
+  train_test: 0.80
+  train_val: 0.80
+
+model:
+  epochs: 10
+  batch_size: 16
+  lr: 0.00003
+  weight_decay: 0.05
+  num_workers: 2
+  img_size: 224
+  amp: true
+
+output:
+  dir: "outputs/part_1"
+  save_best_on: "f1"
+
+A: 
+  route: [0, 0]
+  same_resolution: False
+  pw: False
+  desc: "Non-segmented only"
+B: 
+  route: [1, 1]
+  same_resolution: False
+  pw: False
+  desc: "Segmented only"
+C1: 
+  route: [0, 1]
+  same_resolution: False
+  pw: False
+  desc: "Non-seg → Small, Seg → Large"
+C2: 
+  route: [1, 0]
+  same_resolution: False
+  pw: False
+  desc: "Seg → Small, Non-seg → Large"
+O2: 
+  route: [0, 1]
+  same_resolution: True
+  pw: False
+  desc: "Iso-resolution (Small=Large)"
+O3: 
+  route: [0, 1]
+  same_resolution: True
+  pw: True
+  desc: "Iso-resolution + patch weighting"
+O5: 
+  route: [0, 1]
+  same_resolution: True
+  pw: False
+  iou_weight: 0.1
+  desc: "Iso-resolution + loss IoU"

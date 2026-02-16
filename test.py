@@ -210,20 +210,9 @@ def main():
     cfg = load_config(args.config)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-    
-    # Configurations
-    configs = {
-        "A": {"route": [0, 0], "same_resolution": False, "pw": False, "desc": "Non-segmented only"},
-        "B": {"route": [1, 1], "same_resolution": False, "pw": False, "desc": "Segmented only"},
-        "C1": {"route": [0, 1], "same_resolution": False, "pw": False, "desc": "Non-seg → Small, Seg → Large"},
-        "C2": {"route": [1, 0], "same_resolution": False, "pw": False, "desc": "Seg → Small, Non-seg → Large"},
-        "O2": {"route": [0, 1], "same_resolution": True, "pw": False, "desc": "Iso-resolution (Small=Large)"},
-        "O3": {"route": [0, 1], "same_resolution": True, "pw": True, "desc": "Iso-resolution + patch weighting"},
-        "O5": {"route": [0, 1], "same_resolution": True, "pw": False, "iou_weight": 0.1, "desc": "Iso-resolution + loss IoU"}
-    }
 
-    config = configs[args.config_name]
-    print(f"\nConfiguration: {args.config_name} - {config['desc']}")
+    cfg_name = cfg_name
+    print(f"\nConfiguration: {cfg_name} - {cfg[cfg_name]['desc']}")
 
     # Dataset & DataLoaders
     img_transform = transforms.Compose([
@@ -263,21 +252,21 @@ def main():
     )
 
     # Modèle
-    if args.config_name == "O5":
+    if cfg_name == "O5":
         model = RolloutCrossVitClassifier(
-            same_resolution=config["same_resolution"],
-            route=config["route"],
+            same_resolution=cfg[cfg_name]["same_resolution"],
+            route=cfg[cfg_name]["route"],
             num_classes=2,
             img_size=224,
-            patch_weighting=config["pw"]
+            patch_weighting=cfg[cfg_name]["pw"]
         ).to(device)
     else:
         model = CrossViTClassifier(
-            same_resolution=config["same_resolution"],
-            route=config["route"],
+            same_resolution=cfg[cfg_name]["same_resolution"],
+            route=cfg[cfg_name]["route"],
             num_classes=2,
             img_size=224,
-            patch_weighting=config["pw"]
+            patch_weighting=cfg[cfg_name]["pw"]
         ).to(device)
 
     # Verify model is on correct device
@@ -297,25 +286,25 @@ def main():
         best_f1 = 0.0
         history = {"train_loss": [], "val_loss": [], "val_f1": []}
 
-        for epoch in range(1, cfg["training"]["epochs"] + 1):
-            print(f"\nEpoch {epoch}/{cfg['training']['epochs']}")
+        for epoch in range(1, cfg["model"]["epochs"] + 1):
+            print(f"\nEpoch {epoch}/{cfg['model']['epochs']}")
             
             train_loss, train_iou_loss = train_epoch(
                 model, train_loader, criterion, optimizer, device,
-                iou_weight=config.get("iou_weight", 0.0),
-                use_iou_loss=(args.config_name == "O5")
+                iou_weight=cfg[cfg_name].get("iou_weight", 0.0),
+                use_iou_loss=(cfg_name == "O5")
             )
             
             val_loss, val_iou_loss, metrics = evaluate(
                 model, val_loader, criterion, device,
-                iou_weight=config.get("iou_weight", 0.0),
-                use_iou_loss=(args.config_name == "O5")
+                iou_weight=cfg[cfg_name].get("iou_weight", 0.0),
+                use_iou_loss=(cfg_name == "O5")
             )
             
             scheduler.step()
             
             print(f"Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
-            if args.config_name == "O5":
+            if cfg_name == "O5":
                 print(f"Train IoU Loss: {train_iou_loss:.4f} | Val IoU Loss: {val_iou_loss:.4f}")
             print(f"Val Accuracy: {metrics['accuracy']:.4f} | Val F1: {metrics['f1']:.4f}")
             
@@ -325,10 +314,10 @@ def main():
             
             if metrics["f1"] > best_f1:
                 best_f1 = metrics["f1"]
-                torch.save(model.state_dict(), f"best_model_{args.config_name}.pth")
+                torch.save(model.state_dict(), f"best_model_{cfg_name}.pth")
                 print(f"✓ Best model saved (F1: {best_f1:.4f})")
 
-        torch.save(history, f"history_{args.config_name}.pth")
+        torch.save(history, f"history_{cfg_name}.pth")
 
         # Plots
         plt.figure(figsize=(12, 4))
@@ -342,23 +331,23 @@ def main():
         plt.plot(history["val_f1"], label="Val F1")
         plt.legend()
         plt.title("F1-score")
-        plt.savefig(f"curves_{args.config_name}.png")
+        plt.savefig(f"curves_{cfg_name}.png")
         plt.close()
 
     elif args.mode == "eval":
         print("\n=== Évaluation ===")
-        model.load_state_dict(torch.load(f"best_model_{args.config_name}.pth", map_location=device))
+        model.load_state_dict(torch.load(f"best_model_{cfg_name}.pth", map_location=device))
         val_loss, iou_loss, metrics = evaluate(
             model, val_loader, criterion, device,
-            iou_weight=config.get("iou_weight", 0.0),
-            use_iou_loss=(args.config_name == "O5")
+            iou_weight=cfg[cfg_name].get("iou_weight", 0.0),
+            use_iou_loss=(cfg_name == "O5")
         )
         print(f"Val Loss: {val_loss:.4f} | IoU Loss: {iou_loss:.4f}")
         print(f"Accuracy: {metrics['accuracy']:.4f} | F1: {metrics['f1']:.4f}")
 
     elif args.mode == "interpret":
         print("\n=== Interprétabilité ===")
-        model.load_state_dict(torch.load(f"best_model_{args.config_name}.pth", map_location=device))
+        model.load_state_dict(torch.load(f"best_model_{cfg_name}.pth", map_location=device))
 
         nonseg, seg, _ = next(iter(val_loader))
         nonseg, seg = nonseg.to(device), seg.to(device)
@@ -398,7 +387,7 @@ def main():
                 plt.axis('off')
 
                 plt.tight_layout()
-                plt.savefig(f"interpret_{args.config_name}_{i}.png")
+                plt.savefig(f"interpret_{cfg_name}_{i}.png")
                 plt.close()
 
                 iou = compute_iou(
