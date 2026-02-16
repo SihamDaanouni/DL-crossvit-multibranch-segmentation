@@ -40,14 +40,6 @@ Commande pour lancer le programme :
 uv run test.py --config configs/global.yaml --mode MODE --config_name CONFIG
 ```
 
-## Structure du projet
-```
-├── configs/
-├── models/
-├── src/
-├── vendor/
-└── README.md
-```
 ## Conclusion
 
 Ce projet a permis d'explorer des architectures avancées de Vision Transformers pour l'analyse d'herbiers. Nous avons montré que si l'architecture CrossViT de base est performante, son adaptation spécifique aux données segmentées via un routage intelligent (C1/C2) et une régularisation par l'attention (Loss IoU) permet d'améliorer significativement à la fois les métriques de classification et l'explicabilité du modèle.
