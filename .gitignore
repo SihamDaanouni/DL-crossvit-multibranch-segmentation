@@ -15,10 +15,8 @@ datasets/
 outputs/
 runs/
 checkpoints/
-*.pth
-*.pt
 *.ckpt
-
+*.pth
 # python
 .venv/
 __pycache__/
