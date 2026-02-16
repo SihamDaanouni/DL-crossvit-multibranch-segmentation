@@ -254,7 +254,7 @@ def main():
     )
 
     # Modèle
-    if cfg_name == "O5":
+    if cfg_name == "O5" or cfg_name == "O6":
         model = RolloutCrossVitClassifier(
             same_resolution=cfg[cfg_name]["same_resolution"],
             route=cfg[cfg_name]["route"],
@@ -268,7 +268,7 @@ def main():
             route=cfg[cfg_name]["route"],
             num_classes=2,
             img_size=224,
-            patch_weighting=cfg[cfg_name]["pw"]
+            patch_weighting=cfg[cfg_name]["pw"],
         ).to(device)
 
     # Verify model is on correct device
@@ -294,11 +294,13 @@ def main():
             train_loss, train_iou_loss = train_epoch(
                 model, train_loader, criterion, optimizer, device,
                 iou_weight=cfg[cfg_name].get("iou_weight", 0.0),
+                use_iou_loss=(cfg_name == "O5" or cfg_name == "O6")
             )
             
             val_loss, val_iou_loss, metrics = evaluate(
                 model, val_loader, criterion, device,
                 iou_weight=cfg[cfg_name].get("iou_weight", 0.0),
+                use_iou_loss=(cfg_name == "O5" or cfg_name == "O6")
             )
             
             scheduler.step()
@@ -340,7 +342,7 @@ def main():
         val_loss, iou_loss, metrics = evaluate(
             model, val_loader, criterion, device,
             iou_weight=cfg[cfg_name].get("iou_weight", 0.0),
-            use_iou_loss=(cfg_name == "O5")
+            use_iou_loss=(cfg_name == "O5" or cfg_name == "O6")
         )
         print(f"Val Loss: {val_loss:.4f} | IoU Loss: {iou_loss:.4f}")
         print(f"Accuracy: {metrics['accuracy']:.4f} | F1: {metrics['f1']:.4f}")
