@@ -66,7 +66,7 @@ def train_epoch(
     model.train()
     total_loss, total_iou_loss = 0.0, 0.0
     
-    for nonseg, seg, labels in tqdm(loader, desc="Training"):
+    for nonseg, seg, labels in tqdm(loader, desc="model"):
         nonseg, seg, labels = nonseg.to(device), seg.to(device), labels.to(device)
 
         # Forward - handle both model types
@@ -238,14 +238,14 @@ def main():
 
     train_loader = DataLoader(
         train_set,
-        batch_size=cfg["training"]["batch_size"],
+        batch_size=cfg["model"]["batch_size"],
         shuffle=True,
         num_workers=2,
         pin_memory=(device.type == 'cuda')  # Speed up data transfer to GPU
     )
     val_loader = DataLoader(
         val_set,
-        batch_size=cfg["training"]["batch_size"],
+        batch_size=cfg["model"]["batch_size"],
         shuffle=False,
         num_workers=2,
         pin_memory=(device.type == 'cuda')
@@ -273,10 +273,10 @@ def main():
     print(f"Model device: {next(model.parameters()).device}")
 
     # Optimiseur et loss
-    optimizer = optim.AdamW(model.parameters(), lr=cfg["training"]["lr"])
+    optimizer = optim.AdamW(model.parameters(), lr=cfg["model"]["lr"])
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer,
-        T_max=cfg["training"]["epochs"]
+        T_max=cfg["model"]["epochs"]
     )
     criterion = nn.CrossEntropyLoss()
 
